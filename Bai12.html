@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <title>Phân phối Mức chi trả của Khách hàng</title>
+  <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+  <style>
+    body { font-family: Arial, Roboto, sans-serif; margin: 20px; background: #f8f9fa; }
+    h2 { text-align: center; color: teal; margin-bottom: 20px; }
+    .bar { fill: #00b3ad; }
+    .bar:hover { fill: orange; }
+    .axis text { font-size: 12px; }
+    .tooltip {
+      position: absolute;
+      pointer-events: none;
+      background: rgba(0,0,0,0.8);
+      color: white;
+      padding: 6px 10px;
+      border-radius: 4px;
+      font-size: 12px;
+      display: none;
+    }
+  </style>
+</head>
+<body>
+  <h2>Phân phối Mức chi trả của Khách hàng</h2>
+  <svg id="chart" width="1100" height="500"></svg>
+  <div id="tooltip" class="tooltip"></div>
+
+<script>
+const svg = d3.select("#chart");
+const margin = {top: 40, right: 20, bottom: 70, left: 70};
+const width = +svg.attr("width") - margin.left - margin.right;
+const height = +svg.attr("height") - margin.top - margin.bottom;
+const g = svg.append("g").attr("transform", `translate(${margin.left},${margin.top})`);
+
+const tooltip = d3.select("#tooltip");
+
+d3.csv("data_ggsheet.csv").then(rows => {
+  // Tính tổng chi trả của mỗi khách hàng
+  const byCustomer = d3.rollups(rows, 
+    v => d3.sum(v, d => +d["Thành tiền"]), 
+    d => d["Mã khách hàng"]
+  ).map(([cust, total]) => ({customer: cust, total: total}));
+
+  // Chia bins 50,000
+  const step = 50000;
+  const maxVal = d3.max(byCustomer, d => d.total);
+  const bins = d3.bin()
+    .value(d => d.total)
+    .domain([0, maxVal])
+    .thresholds(d3.range(0, maxVal + step, step))(byCustomer);
+
+  const dist = bins.map(b => ({
+    range: `Từ ${d3.format(",")(b.x0)} đến ${d3.format(",")(b.x1)}`,
+    count: b.length,
+    x0: b.x0,
+    x1: b.x1
+  }));
+
+  // Scales
+  const x = d3.scaleBand()
+    .domain(dist.map(d => d.range))
+    .range([0, width])
+    .padding(0.1);
+
+  const y = d3.scaleLinear()
+    .domain([0, d3.max(dist, d => d.count)]).nice()
+    .range([height, 0]);
+
+  // Axis
+  g.append("g")
+    .attr("transform", `translate(0,${height})`)
+    .call(d3.axisBottom(x).tickValues(x.domain().filter((d,i) => i % 2 === 0))) // hiển thị cách nhãn
+    .selectAll("text")
+      .attr("transform", "rotate(-35)")
+      .style("text-anchor", "end");
+
+  g.append("g").call(d3.axisLeft(y));
+
+  // Bars
+  g.selectAll(".bar")
+    .data(dist)
+    .enter().append("rect")
+      .attr("class", "bar")
+      .attr("x", d => x(d.range))
+      .attr("y", d => y(d.count))
+      .attr("width", x.bandwidth())
+      .attr("height", d => height - y(d.count))
+      .on("mousemove", (ev, d) => {
+        tooltip.style("display", "block")
+          .html(`
+            <b>${d.count}</b> khách hàng<br/>
+            Mức chi trả: <b>${d.range}</b>
+          `)
+          .style("left", (ev.pageX + 15) + "px")
+          .style("top", (ev.pageY - 20) + "px");
+      })
+      .on("mouseleave", () => tooltip.style("display", "none"));
+
+  // Nhãn trục
+  svg.append("text")
+    .attr("x", margin.left + width/2)
+    .attr("y", height + margin.top + 60)
+    .attr("text-anchor", "middle")
+    .attr("font-size", "13px")
+    .text("Khoảng mức chi trả (VNĐ)");
+
+  svg.append("text")
+    .attr("transform", "rotate(-90)")
+    .attr("x", -(margin.top + height/2))
+    .attr("y", 20)
+    .attr("text-anchor", "middle")
+    .attr("font-size", "13px")
+    .text("Số khách hàng");
+});
+</script>
+</body>
+</html>

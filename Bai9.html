@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <title>Q9 – Xác suất bán hàng của Mặt hàng theo Nhóm hàng</title>
+  <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+  <style>
+    body { font-family: Arial, "Segoe UI", Roboto; margin: 12px; background:#f5f6f7; }
+    h2 { text-align: center; background: #0f7f7f; color: white; padding: 10px; border-radius: 6px; }
+    .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; justify-content:center; }
+    .panel {
+      background: #fff; border: 1px solid #e6e6e6; border-radius: 6px;
+      padding: 8px 10px 12px;
+      width: 460px;
+      height: 300px;
+      overflow: hidden;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    }
+    .panel-title {
+      text-align:center; font-weight:700; color:#0f7f7f; margin: 4px 0 6px;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .axis text { font-size: 11px; }
+    .label { font-size: 11px; font-weight: 600; }
+    /* tooltip */
+    .tooltip {
+      position: absolute;
+      pointer-events: none;
+      background: rgba(0,0,0,0.8);
+      color: #fff;
+      padding: 6px 8px;
+      border-radius: 4px;
+      font-size: 12px;
+      display: none;
+      z-index: 9999;
+      max-width: 260px;
+    }
+  </style>
+</head>
+<body>
+  <h2>Xác suất bán hàng của Mặt hàng theo Nhóm hàng</h2>
+  <div id="wrap" class="grid"></div>
+  <div id="tip" class="tooltip"></div>
+
+<script>
+/* === Helper tooltip (self-contained) === */
+const tip = d3.select("#tip");
+function showTooltip(html, ev) {
+  tip.html(html)
+     .style("display", "block")
+     .style("left", (ev.pageX + 12) + "px")
+     .style("top", (ev.pageY + 12) + "px");
+}
+function hideTooltip() {
+  tip.style("display", "none");
+}
+
+/* === Load CSV ===
+*/
+d3.csv("data_ggsheet.csv").then(rows => {
+
+  // nếu file rỗng
+  if (!rows || rows.length === 0) {
+    d3.select("#wrap").append("div").text("CSV rỗng hoặc không đọc được dữ liệu.");
+    return;
+  }
+
+  // Gom đơn theo Order ID
+  const orders = d3.group(rows, d => d["Mã đơn hàng"]);
+  const totalOrders = orders.size;
+
+  // item -> Set(orderId), itemGroup map, groups set
+  const itemOrders = new Map();
+  const itemGroup  = new Map();
+  const groupsSet  = new Set();
+
+  for (const [oid, items] of orders) {
+    // tạo tập các item (unique) theo định dạng "[Mã] Tên"
+    const uniqItems = new Set(items.map(d => `[${d["Mã mặt hàng"]}] ${d["Tên mặt hàng"]}`));
+    for (const it of uniqItems) {
+      // tìm 1 hàng tương ứng để lấy nhóm của item
+      const row = items.find(r => `[${r["Mã mặt hàng"]}] ${r["Tên mặt hàng"]}` === it);
+      const grp = row ? `[${row["Mã nhóm hàng"]}] ${row["Tên nhóm hàng"]}` : "N/A";
+      if (!itemOrders.has(it)) itemOrders.set(it, new Set());
+      itemOrders.get(it).add(oid);
+      itemGroup.set(it, grp);
+      groupsSet.add(grp);
+    }
+  }
+
+  // Tính tổng số đơn theo từng group (số đơn trong nhóm)
+  const groupTotals = new Map(); // grp -> Set(orderId)
+  for (const [item, setOid] of itemOrders) {
+    const grp = itemGroup.get(item) || "N/A";
+    if (!groupTotals.has(grp)) groupTotals.set(grp, new Set());
+    for (const oid of setOid) groupTotals.get(grp).add(oid);
+  }
+  // chuyển Set -> số lượng
+  for (const [grp, set] of Array.from(groupTotals)) {
+    groupTotals.set(grp, set.size);
+  }
+
+  // Gom dữ liệu theo nhóm: grp -> [{item, prob, count}]
+  const byGroup = new Map();
+  for (const [item, setOid] of itemOrders) {
+    const grp = itemGroup.get(item) || "N/A";
+    if (!byGroup.has(grp)) byGroup.set(grp, []);
+    const totalGroupOrders = groupTotals.get(grp) || 1; // tránh chia 0
+    byGroup.get(grp).push({
+      item,
+      prob: setOid.size / totalGroupOrders,
+      count: setOid.size,
+      totalGroupOrders
+    });
+  }
+  // sort mỗi nhóm theo prob giảm dần
+  for (const [grp, arr] of byGroup) arr.sort((a,b) => d3.descending(a.prob, b.prob));
+
+  // Màu: dùng một scale toàn cục
+  const allItems = Array.from(itemOrders.keys());
+  const palette = d3.schemeTableau10.concat(d3.schemeSet3 || []);
+  const color = d3.scaleOrdinal().domain(allItems).range(palette);
+
+  // vẽ small multiples
+  const wrap = d3.select("#wrap");
+  const panelW = 440, panelH = 280;
+  const margin = { top: 20, right: 55, bottom: 60, left: 200 };
+  const innerW = panelW - margin.left - margin.right;
+  const innerH = panelH - margin.top - margin.bottom;
+
+  Array.from(groupsSet).sort().forEach(grp => {
+    const data = byGroup.get(grp) || [];
+
+    const panel = wrap.append("div").attr("class","panel");
+    panel.append("div").attr("class","panel-title").text(grp);
+
+    const svg = panel.append("svg").attr("width", panelW).attr("height", panelH);
+    const g = svg.append("g").attr("transform", `translate(${margin.left},${margin.top})`);
+
+    // Y scale
+    const dynPadding = data.length <= 4 ? 0.35 : data.length <= 7 ? 0.25 : 0.15;
+    const y = d3.scaleBand()
+      .domain(data.map(d => d.item))
+      .range([0, innerH])
+      .padding(dynPadding);
+
+    // X scale: chọn tick step linh hoạt
+    const maxProb = d3.max(data, d => d.prob) || 0;
+    const step = data.length <= 3 ? 0.10 : 0.05;
+    const maxTick = Math.max(step, Math.ceil(maxProb / step) * step);
+    const x = d3.scaleLinear().domain([0, maxTick]).range([0, innerW]);
+
+    // axis X
+    g.append("g")
+      .attr("transform", `translate(0,${innerH})`)
+      .call(d3.axisBottom(x)
+        .tickValues(d3.range(0, maxTick + step/2, step))
+        .tickFormat(d3.format(".0%"))
+      )
+      .selectAll("text").style("font-size","9px");
+
+    // axis Y
+    g.append("g")
+      .call(d3.axisLeft(y).tickSize(0))
+      .selectAll("text").style("font-size","10px");
+
+    // bars
+    g.selectAll(".bar")
+      .data(data)
+      .enter().append("rect")
+        .attr("class","bar")
+        .attr("y", d => y(d.item))
+        .attr("x", 0)
+        .attr("height", Math.max(2, y.bandwidth()))
+        .attr("width", d => x(d.prob))
+        .attr("fill", d => color(d.item))
+        .on("mousemove", (ev, d) => {
+          showTooltip(`
+            <div style="font-weight:700">${d.item}</div>
+            <div style="margin-top:4px">${grp}</div>
+            <div style="margin-top:4px">Xác suất (trong nhóm): <b>${(d.prob*100).toFixed(1)}%</b></div>
+            <div>Số đơn chứa item: <b>${d.count}</b> / Nhóm: <b>${d.totalGroupOrders}</b></div>
+          `, ev);
+        })
+        .on("mouseleave", hideTooltip);
+
+    // nhãn % ngoài bar
+    g.selectAll(".label")
+      .data(data).enter().append("text")
+        .attr("class","label")
+        .attr("x", d => x(d.prob) + 6)
+        .attr("y", d => (y(d.item) ?? 0) + (y.bandwidth()/2) + 4)
+        .text(d => (d.prob*100).toFixed(1) + "%");
+  });
+
+}).catch(err => {
+  console.error("Lỗi khi load CSV:", err);
+  d3.select("#wrap").append("div").style("color","red").text("Không thể load file CSV — kiểm tra đường dẫn và chạy local server.");
+});
+</script>
+</body>
+</html>

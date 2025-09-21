@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <title>Doanh số bán theo Nhóm hàng</title>
+  <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; }
+    h2 { text-align: center; color: teal; }
+    .bar-label {
+      fill: white;
+      font-size: 12px;
+      font-weight: bold;
+    }
+    .group-name {
+      font-size: 12px;
+      fill: #333;
+    }
+    .legend {
+      position: absolute;
+      top: 50px;
+      right: 40px;
+    }
+    .legend-item {
+      display: flex; align-items: center; margin: 4px;
+      font-size: 13px;
+    }
+    .legend-color {
+      width: 14px; height: 14px; margin-right: 6px; border-radius: 2px;
+    }
+  </style>
+</head>
+<body>
+  <h2>Doanh số bán theo Nhóm hàng</h2>
+  <div id="chart"></div>
+  <div class="legend" id="legend"></div>
+
+<script>
+d3.csv("data_ggsheet.csv").then(rows => {
+  // ép kiểu số
+  rows.forEach(d => {
+    d.SL = +d["SL"];
+    d.ThanhTien = +String(d["Thành tiền"]).replace(/[^\d.-]/g,"");
+  });
+
+  // Gom theo Nhóm hàng
+  const byGroup = d3.rollups(
+    rows,
+    v => ({
+      TongSL: d3.sum(v, d => d.SL),
+      TongDS: d3.sum(v, d => d.ThanhTien),
+      TenNhomHang: v[0]["Tên nhóm hàng"]
+    }),
+    d => d["Mã nhóm hàng"]
+  );
+
+  // Chuẩn hóa data array
+  let data = byGroup.map(([Code, info]) => ({
+    Code,
+    Group: `[${Code}] ${info.TenNhomHang}`,
+    SL: info.TongSL,
+    Sales: info.TongDS
+  }));
+
+  // Sắp xếp giảm dần theo Doanh số
+  data.sort((a,b)=> b.Sales - a.Sales);
+
+  // Thang màu
+  const groups = data.map(d=>d.Group);
+  const color = d3.scaleOrdinal()
+    .domain(groups)
+    .range(d3.schemeTableau10);
+
+  // Kích thước
+  const margin = {top:20, right:200, bottom:40, left:260};
+  const width = 1100 - margin.left - margin.right;
+  const barHeight = 40;
+  const height = data.length * (barHeight+8);
+
+  const svg = d3.select("#chart").append("svg")
+    .attr("width", width + margin.left + margin.right)
+    .attr("height", height + margin.top + margin.bottom)
+    .append("g")
+    .attr("transform",`translate(${margin.left},${margin.top})`);
+
+  const x = d3.scaleLinear()
+    .domain([0, d3.max(data,d=>d.Sales)])
+    .range([0,width]);
+
+  const y = d3.scaleBand()
+    .domain(data.map(d=>d.Group))
+    .range([0,height])
+    .padding(0.2);
+
+  // Bars
+  const bars = svg.selectAll(".bar")
+    .data(data)
+    .enter()
+    .append("g")
+    .attr("transform", d=>`translate(0,${y(d.Group)})`);
+
+  bars.append("rect")
+    .attr("height", y.bandwidth())
+    .attr("width", d=>x(d.Sales))
+    .attr("fill", d=>color(d.Group))
+    .attr("rx",6);
+
+  // Tên nhóm hàng
+  svg.selectAll(".group-label")
+    .data(data)
+    .enter()
+    .append("text")
+    .attr("class","group-name")
+    .attr("x",-10)
+    .attr("y", d=>y(d.Group)+y.bandwidth()/2)
+    .attr("dy","0.35em")
+    .attr("text-anchor","end")
+    .text(d=>d.Group);
+
+  // Giá trị trên bar
+  bars.append("text")
+    .attr("class","bar-label")
+    .attr("x", d=>x(d.Sales)-50)
+    .attr("y", y.bandwidth()/2)
+    .attr("dy","0.35em")
+    .text(d=>(d.Sales/1000000).toFixed(0)+"M");
+
+  // Legend
+  const legend = d3.select("#legend");
+  groups.forEach(g=>{
+    const item = legend.append("div").attr("class","legend-item");
+    item.append("div").attr("class","legend-color").style("background",color(g));
+    item.append("div").text(g);
+  });
+});
+</script>
+</body>
+</html>

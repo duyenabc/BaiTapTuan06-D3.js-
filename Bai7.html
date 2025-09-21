@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <title>Xác suất bán theo Nhóm hàng</title>
+  <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; }
+    h2 { text-align: center; color: teal; }
+    .bar-label { fill: #222; font-size: 12px; font-weight: 700; text-anchor: start; }
+    .msg { color: #b00; font-weight:700; margin: 12px 0; }
+  </style>
+</head>
+<body>
+  <h2>Xác suất bán hàng theo Nhóm hàng</h2>
+  <div id="chart"></div>
+  <div id="message"></div>
+
+<script>
+// Load CSV
+d3.csv("data_ggsheet.csv").then(rows => {
+    // Tiền xử lý dữ liệu
+  rows.forEach(d => {
+    d._order = d["Mã đơn hàng"]?.trim();
+    d._group = d["Tên nhóm hàng"]?.trim();
+  });
+
+  const valid = rows.filter(r => r._order && r._group);
+  if (valid.length === 0) {
+    d3.select("#message").html('<div class="msg">Không có dữ liệu hợp lệ.</div>');
+    return;
+  }
+
+  // Tổng số đơn
+  const totalOrders = new Set(valid.map(d => d._order)).size;
+
+  // Tính số đơn chứa mỗi nhóm hàng
+  // => rollup: groupName -> Set(orderId) -> size
+  const groupOrderMap = d3.rollup(
+    valid,
+    v => new Set(v.map(x => x._order)),
+    d => d._group
+  );
+
+  const data = Array.from(groupOrderMap, ([group, orderSet]) => ({
+    Group: group,
+    Count: orderSet.size,
+    Probability: orderSet.size / totalOrders
+  }));
+
+// Sắp xếp theo xác suất giảm dần
+data.sort((a,b) => d3.descending(a.Probability, b.Probability));
+
+
+  const maxVal = d3.max(data, d => d.Probability) || 0;
+  if (maxVal === 0) {
+    d3.select("#message").html('<div class="msg">Tất cả xác suất = 0.</div>');
+    return;
+  }
+
+  // Vẽ chart
+  const margin = {top:30, right:40, bottom:30, left:150};
+  const width = 860 - margin.left - margin.right;
+  const height = 30 * data.length;
+
+  const svg = d3.select("#chart").append("svg")
+    .attr("width", width + margin.left + margin.right)
+    .attr("height", height + margin.top + margin.bottom)
+    .append("g")
+    .attr("transform", `translate(${margin.left},${margin.top})`);
+
+  const y = d3.scaleBand()
+    .domain(data.map(d => d.Group))
+    .range([0, height])
+    .padding(0.2);
+
+  const x = d3.scaleLinear().domain([0,maxVal]).nice().range([0,width]);
+  const color = d3.scaleSequential(d3.interpolateBlues).domain([0,maxVal]);
+
+  svg.selectAll(".bar")
+    .data(data)
+    .enter()
+    .append("rect")
+      .attr("class","bar")
+      .attr("y", d => y(d.Group))
+      .attr("x", 0)
+      .attr("height", y.bandwidth())
+      .attr("width", d => x(d.Probability))
+      .attr("fill", d => color(d.Probability))
+      .attr("rx",4);
+
+  svg.append("g")
+    .call(d3.axisLeft(y));
+
+  svg.append("g")
+    .attr("transform", `translate(0,${height})`)
+    .call(d3.axisBottom(x).tickFormat(d3.format(".0%")));
+
+  // Nhãn phần trăm
+  svg.selectAll(".bar-label")
+    .data(data)
+    .enter()
+    .append("text")
+      .attr("class","bar-label")
+      .attr("x", d => x(d.Probability) + 6)
+      .attr("y", d => y(d.Group) + y.bandwidth()/2)
+      .attr("dy", "0.35em")
+      .text(d => d3.format(".1%")(d.Probability));
+})
+.catch(err => {
+  console.error("Lỗi load CSV:", err);
+  d3.select("#message").html('<div class="msg">Không thể load file CSV — kiểm tra đường dẫn và chạy local server.</div>');
+});
+</script>
+</body>
+</html>

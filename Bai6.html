@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <title>Doanh số trung bình theo khung giờ</title>
+  <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; }
+    h2 { text-align: center; color: teal; }
+    .bar-label { fill: #222; font-size: 12px; font-weight: 700; text-anchor: middle; }
+    .msg { color: #b00; font-weight:700; margin: 12px 0; }
+  </style>
+</head>
+<body>
+  <h2>Doanh số trung bình theo khung giờ (8:00 – 23:59)</h2>
+  <div id="chart"></div>
+  <div id="message"></div>
+
+<script>
+// helpers parse date và tiền
+const tryParsers = [
+  d3.timeParse("%Y-%m-%d %H:%M:%S"),
+  d3.timeParse("%Y-%m-%dT%H:%M:%S"),
+  d3.timeParse("%Y/%m/%d %H:%M:%S"),
+  d3.timeParse("%d/%m/%Y %H:%M:%S"),
+  d3.timeParse("%Y-%m-%d"),
+  d3.timeParse("%d/%m/%Y")
+];
+function parseDateFlexible(s) {
+  if (!s && s !== 0) return new Date(NaN);
+  const dt = new Date(s);
+  if (!isNaN(dt)) return dt;
+  for (const p of tryParsers) {
+    const d = p(s);
+    if (d) return d;
+  }
+  return new Date(NaN);
+}
+function parseNumberFlexible(s) {
+  if (s == null) return NaN;
+  const cleaned = String(s).replace(/\s/g, '').replace(/[^\d\.\-\,]/g, '');
+  if (cleaned.indexOf(',') !== -1 && cleaned.indexOf('.') !== -1) return parseFloat(cleaned.replace(/,/g,''));
+  if (cleaned.indexOf(',') !== -1 && cleaned.indexOf('.') === -1) return parseFloat(cleaned.replace(/,/g,''));
+  return parseFloat(cleaned);
+}
+
+// load CSV
+d3.csv("data_ggsheet.csv").then(rows => {
+  rows.forEach(d => {
+    const rawMoney = d["Thành tiền"] ?? d["ThanhTien"] ?? d["Thành_tiền"] ?? d["Thanh tien"] ?? d["ThànhTien"];
+    const rawDate = d["Thời gian tạo đơn"] ?? d["ThoiGianTaoDon"] ?? d["Thời gian"] ?? d["Ngay"];
+    d._parsedMoney = parseNumberFlexible(rawMoney);
+    d._parsedDate = parseDateFlexible(rawDate);
+  });
+
+  const valid = rows.filter(r => !isNaN(r._parsedDate) && !isNaN(r._parsedMoney));
+  if (valid.length === 0) {
+    d3.select("#message").html('<div class="msg">Không có dữ liệu hợp lệ.</div>');
+    return;
+  }
+
+  // Bước 1: tổng doanh thu mỗi đơn theo giờ
+  const byHour = d3.rollups(
+    valid,
+    v => d3.sum(v, d => d._parsedMoney || 0),
+    d => d._parsedDate.getHours()
+  );
+
+  // Bước 2: trung bình doanh thu theo giờ
+  const avgByHour = d3.rollups(
+    byHour,
+    v => d3.mean(v, d => d[1]),
+    d => d[0]
+  );
+
+  // Chỉ lấy 8h–23h
+  const data = Array.from({length:16}, (_,i) => {
+    const h = i + 8;
+    const found = avgByHour.find(b => b[0] === h);
+    return {
+      Hour: h,
+      Label: `${h}:00 - ${h}:59`,
+      AvgSales: found ? (isNaN(found[1]) ? 0 : +found[1]) : 0
+    };
+  });
+
+  const maxVal = d3.max(data, d => d.AvgSales) || 0;
+  if (maxVal === 0) {
+    d3.select("#message").html('<div class="msg">Kết quả bằng 0 cho tất cả giờ.</div>');
+    return;
+  }
+
+  // Vẽ chart
+  const margin = {top:30, right:30, bottom:80, left:90};
+  const width = 860 - margin.left - margin.right;
+  const height = 420 - margin.top - margin.bottom;
+
+  const svg = d3.select("#chart").append("svg")
+    .attr("width", width + margin.left + margin.right)
+    .attr("height", height + margin.top + margin.bottom)
+    .append("g")
+    .attr("transform", `translate(${margin.left},${margin.top})`);
+
+  const x = d3.scaleBand()
+    .domain(data.map(d => d.Label))
+    .range([0, width])
+    .padding(0.25);
+
+  const y = d3.scaleLinear().domain([0, maxVal]).nice().range([height,0]);
+  const color = d3.scaleSequential(d3.interpolateOranges).domain([0,maxVal]);
+
+  svg.selectAll(".bar")
+    .data(data)
+    .enter()
+    .append("rect")
+      .attr("class","bar")
+      .attr("x", d => x(d.Label))
+      .attr("y", d => y(d.AvgSales))
+      .attr("width", x.bandwidth())
+      .attr("height", d => height - y(d.AvgSales))
+      .attr("fill", d => color(d.AvgSales))
+      .attr("rx",4);
+
+  svg.append("g")
+    .attr("transform", `translate(0,${height})`)
+    .call(d3.axisBottom(x))
+    .selectAll("text")
+      .style("text-anchor","end")
+      .attr("transform","rotate(-35)");
+
+  svg.append("g")
+    .call(d3.axisLeft(y).tickFormat(d=> (d/1e6).toFixed(1) + "M"));
+
+  svg.selectAll(".bar-label")
+    .data(data)
+    .enter()
+    .append("text")
+      .attr("class","bar-label")
+      .attr("x", d => x(d.Label) + x.bandwidth()/2)
+      .attr("y", d => y(d.AvgSales) - 6)
+      .text(d => (d.AvgSales > 0 ? (d.AvgSales/1e6).toFixed(1) + " M" : ""));
+})
+.catch(err => {
+  console.error("Lỗi load CSV:", err);
+  d3.select("#message").html('<div class="msg">Không thể load file CSV — kiểm tra đường dẫn và chạy local server.</div>');
+});
+</script>
+</body>
+</html>

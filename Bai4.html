@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <title>Doanh số trung bình theo ngày trong tuần (AVERAGEX style)</title>
+  <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; }
+    h2 { text-align: center; color: teal; }
+    .bar-label { fill: #222; font-size: 12px; font-weight: 700; text-anchor: middle; }
+    .msg { color: #b00; font-weight:700; margin: 12px 0; }
+  </style>
+</head>
+<body>
+  <h2>Doanh số trung bình theo ngày trong tuần</h2>
+  <div id="chart"></div>
+  <div id="message"></div>
+
+<script>
+// helpers
+const tryParsers = [
+  d3.timeParse("%Y-%m-%d %H:%M:%S"),
+  d3.timeParse("%Y-%m-%dT%H:%M:%S"),
+  d3.timeParse("%Y/%m/%d %H:%M:%S"),
+  d3.timeParse("%d/%m/%Y %H:%M:%S"),
+  d3.timeParse("%Y-%m-%d"),
+  d3.timeParse("%d/%m/%Y")
+];
+function parseDateFlexible(s) {
+  if (!s && s !== 0) return new Date(NaN);
+  // try native
+  const dt = new Date(s);
+  if (!isNaN(dt)) return dt;
+  // try candidates
+  for (const p of tryParsers) {
+    const d = p(s);
+    if (d) return d;
+  }
+  return new Date(NaN);
+}
+function parseNumberFlexible(s) {
+  if (s == null) return NaN;
+  // remove currency symbols, spaces; keep minus and dot
+  const cleaned = String(s).replace(/\s/g, '').replace(/[^\d\.\-\,]/g, '');
+  // if there are both '.' and ',' guess thousands vs decimal
+  if (cleaned.indexOf(',') !== -1 && cleaned.indexOf('.') !== -1) {
+    // assume '.' decimal, ',' thousands -> remove commas
+    return parseFloat(cleaned.replace(/,/g,''));
+  }
+  // if only comma present, likely comma thousands (e.g. "12,500,000") -> remove commas
+  if (cleaned.indexOf(',') !== -1 && cleaned.indexOf('.') === -1) {
+    return parseFloat(cleaned.replace(/,/g,''));
+  }
+  // otherwise parseFloat directly
+  return parseFloat(cleaned);
+}
+
+// main
+d3.csv("data_ggsheet.csv").then(rows => {
+  // parse rows robustly
+  rows.forEach((d,i) => {
+    // flexible column names fallback
+    const rawMoney = d["Thành tiền"] ?? d["ThanhTien"] ?? d["Thành_tiền"] ?? d["Thanh tien"] ?? d["ThànhTien"];
+    const rawDate = d["Thời gian tạo đơn"] ?? d["ThoiGianTaoDon"] ?? d["Thời gian"] ?? d["Ngay"];
+    d._parsedMoney = parseNumberFlexible(rawMoney);
+    d._parsedDate = parseDateFlexible(rawDate);
+    // also keep original
+    d._rawMoney = rawMoney;
+    d._rawDate = rawDate;
+  });
+
+  // debug small sample
+  console.log("Sample parsed rows (first 6):", rows.slice(0,6).map(r=>({
+    rawDate: r._rawDate, parsedDate: r._parsedDate, rawMoney: r._rawMoney, parsedMoney: r._parsedMoney
+  })));
+
+  // filter valid rows (with valid date)
+  const valid = rows.filter(r => !isNaN(r._parsedDate));
+  if (valid.length === 0) {
+    d3.select("#message").html('<div class="msg">Không có dữ liệu ngày hợp lệ (kiểm tra cột "Thời gian tạo đơn").</div>');
+    return;
+  }
+
+  // === Bước 1: Gom theo NGÀY CỤ THỂ (không giờ) => tổng tiền mỗi ngày ===
+  // key: d3.timeDay(date) returns Date at midnight
+  const byDate = d3.rollups(
+    valid,
+    v => d3.sum(v, d => d._parsedMoney || 0),
+    d => d3.timeDay(d._parsedDate)
+  );
+  // byDate: [ [Date(midnight), total], ... ]
+  console.log("byDate sample (first 10):", byDate.slice(0,10));
+
+  if (byDate.length === 0) {
+    d3.select("#message").html('<div class="msg">Không thể tính tổng theo ngày (kiểm tra cột tiền/định dạng).</div>');
+    return;
+  }
+
+  // === Bước 2: nhóm byDate theo weekday và lấy trung bình của tổng/ngày (AVERAGEX semantics) ===
+  const byWeekday = d3.rollups(
+    byDate,
+    v => d3.mean(v, d => d[1]),   // mean of daily totals
+    d => {
+      const dow = d[0].getDay(); // 0=Sun ... 6=Sat
+      if (dow === 0) return "Chủ nhật";
+      return "Thứ " + (dow + 1); // dow=1 -> "Thứ 2"
+    }
+  );
+  console.log("byWeekday (raw):", byWeekday);
+
+  // prepare ordered weekdays (Thứ 2 -> Chủ nhật)
+  const weekdaysOrdered = ["Thứ 2","Thứ 3","Thứ 4","Thứ 5","Thứ 6","Thứ 7","Chủ nhật"];
+
+  // map to array in correct order
+  const data = weekdaysOrdered.map(w => {
+    const found = byWeekday.find(b => b[0] === w);
+    return { Day: w, AvgSales: found ? (isNaN(found[1]) ? 0 : +found[1]) : 0 };
+  });
+
+  console.log("Final data (Ordered):", data);
+
+  // check if all zeros
+  const maxVal = d3.max(data, d => d.AvgSales) || 0;
+  if (maxVal === 0) {
+    d3.select("#message").html('<div class="msg">Kết quả bằng 0 cho tất cả ngày — có thể do cột "Thành tiền" không parse được. Kiểm tra Console để biết chi tiết.</div>');
+    return;
+  }
+
+  // === Vẽ chart (vertical bars, X = Thứ, Y = avg daily total) ===
+  const margin = {top:30, right:30, bottom:50, left:90};
+  const width = 860 - margin.left - margin.right;
+  const height = 420 - margin.top - margin.bottom;
+
+  const svg = d3.select("#chart").append("svg")
+    .attr("width", width + margin.left + margin.right)
+    .attr("height", height + margin.top + margin.bottom)
+    .append("g")
+    .attr("transform", `translate(${margin.left},${margin.top})`);
+
+  const x = d3.scaleBand().domain(data.map(d=>d.Day)).range([0,width]).padding(0.25);
+  const y = d3.scaleLinear().domain([0, maxVal]).nice().range([height,0]);
+  const color = d3.scaleSequential(d3.interpolateBlues).domain([0,maxVal]);
+
+  svg.selectAll(".bar")
+    .data(data)
+    .enter()
+    .append("rect")
+      .attr("class","bar")
+      .attr("x", d => x(d.Day))
+      .attr("y", d => y(d.AvgSales))
+      .attr("width", x.bandwidth())
+      .attr("height", d => height - y(d.AvgSales))
+      .attr("fill", d => color(d.AvgSales))
+      .attr("rx",4);
+
+  // labels X
+  svg.append("g")
+    .attr("transform", `translate(0,${height})`)
+    .call(d3.axisBottom(x));
+
+  // Y axis with millions
+  svg.append("g")
+    .call(d3.axisLeft(y).tickFormat(d=> (d/1e6).toFixed(1) + "M"));
+
+  // label on bars formatted as X.X M
+svg.selectAll(".bar-label")
+  .data(data)
+  .enter()
+  .append("text")
+    .attr("class","bar-label")
+    .attr("x", d => x(d.Day) + x.bandwidth()/2)
+    .attr("y", d => y(d.AvgSales) - 6)
+    .text(d => d.AvgSales > 0 ? d.AvgSales.toLocaleString("vi-VN") : "");
+})
+.catch(err => {
+  console.error("Lỗi load CSV:", err);
+  d3.select("#message").html('<div class="msg">Không thể load file CSV — kiểm tra đường dẫn và chạy local server.</div>');
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <title>Xác suất bán theo Nhóm hàng theo Tháng (với tooltip)</title>
+  <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 18px; color: #222; }
+    h2 { text-align:center; color: teal; margin-bottom: 6px; }
+    svg { background: white; }
+    .axis .domain { stroke: #ccc; }
+    .grid line { stroke: #eee; stroke-opacity: 1; }
+    .line { fill: none; stroke-width: 2.2px; }
+    .dot { stroke: #fff; stroke-width: 1.2px; }
+    .legend text { font-size: 12px; }
+    /* tooltip */
+    #tooltip {
+      position: absolute;
+      pointer-events: none;
+      background: rgba(0,0,0,0.78);
+      color: #fff;
+      padding: 8px 10px;
+      border-radius: 6px;
+      font-size: 12px;
+      line-height: 1.2;
+      display: none;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+    }
+  </style>
+</head>
+<body>
+  <h2>Xác suất bán hàng theo Nhóm hàng theo Tháng</h2>
+  <div id="chart-wrap">
+    <svg id="chart" width="1000" height="520"></svg>
+  </div>
+
+  <div id="tooltip"></div>
+
+<script>
+// --------- parse date helpers ----------
+const tryParsers = [
+  d3.timeParse("%Y-%m-%d %H:%M:%S"),
+  d3.timeParse("%Y-%m-%dT%H:%M:%S"),
+  d3.timeParse("%Y/%m/%d %H:%M:%S"),
+  d3.timeParse("%d/%m/%Y %H:%M:%S"),
+  d3.timeParse("%Y-%m-%d"),
+  d3.timeParse("%d/%m/%Y"),
+];
+function parseDateFlexible(s) {
+  if (!s && s !== 0) return new Date(NaN);
+  const dt = new Date(s);
+  if (!isNaN(dt)) return dt;
+  for (const p of tryParsers) {
+    const d = p(s);
+    if (d) return d;
+  }
+  return new Date(NaN);
+}
+
+// --------- load CSV and prepare monthly group probabilities ----------
+d3.csv("data_ggsheet.csv").then(rows => {
+  // normalize columns used in our dataset
+  rows.forEach(r => {
+    r._order = (r["Mã đơn hàng"] ?? r["Mã đơn"] ?? r["OrderID"] ?? r["Order"] ?? "").trim();
+    r._group = (r["Tên nhóm hàng"] ?? r["Nhóm hàng"] ?? r["Group"] ?? r["NhomHang"] ?? "").trim();
+    r._dt = parseDateFlexible(r["Thời gian tạo đơn"] ?? r["Thời gian"] ?? r["Time"] ?? "");
+    // canonical month date = first day of month at 00:00
+    r._monthDate = isNaN(r._dt) ? null : d3.timeMonth(r._dt);
+  });
+
+  const valid = rows.filter(r => r._order && r._group && r._monthDate);
+  if (valid.length === 0) {
+    d3.select("#chart-wrap").append("div").text("Không có dữ liệu hợp lệ (kiểm tra tên cột và giá trị ngày).");
+    return;
+  }
+
+  // Build map: monthKey -> { totalOrders: Set, groupOrders: Map(group -> Set) }
+  const monthMap = new Map();
+  const groupSet = new Set();
+
+  valid.forEach(r => {
+    const key = +r._monthDate; // numeric timestamp for month
+    if (!monthMap.has(key)) monthMap.set(key, { totalOrders: new Set(), groupOrders: new Map() });
+    const m = monthMap.get(key);
+    m.totalOrders.add(r._order);
+    if (!m.groupOrders.has(r._group)) m.groupOrders.set(r._group, new Set());
+    m.groupOrders.get(r._group).add(r._order);
+    groupSet.add(r._group);
+  });
+
+  // Sorted months (Date objects)
+  const monthKeys = Array.from(monthMap.keys()).sort((a,b) => a - b);
+  const months = monthKeys.map(k => new Date(k));
+
+  // For each group, produce array of { date, count, total, prob }
+  const groups = Array.from(groupSet);
+  const series = groups.map(g => {
+    const values = monthKeys.map(k => {
+      const m = monthMap.get(k);
+      const total = m.totalOrders.size;
+      const count = (m.groupOrders.get(g) ? m.groupOrders.get(g).size : 0);
+      const prob = total ? (count / total) : 0;
+      return { date: new Date(k), count, total, prob };
+    });
+    return { name: g, values };
+  });
+
+  // ---------- draw chart ----------
+  const svg = d3.select("#chart");
+  const margin = { top: 48, right: 200, bottom: 60, left: 70 };
+  const width = +svg.attr("width") - margin.left - margin.right;
+  const height = +svg.attr("height") - margin.top - margin.bottom;
+  svg.selectAll("*").remove();
+  const g = svg.append("g").attr("transform", `translate(${margin.left},${margin.top})`);
+
+  // x scale: time across months
+  const x = d3.scaleTime()
+              .domain(d3.extent(months))
+              .range([0, width]);
+
+  // y scale: probability 0..max (or 1)
+  const maxProb = d3.max(series, s => d3.max(s.values, v => v.prob)) || 0;
+  const y = d3.scaleLinear().domain([0, Math.max(maxProb, 0.25)]).nice().range([height, 0]);
+
+  // gridlines
+  g.append("g")
+    .attr("class", "grid")
+    .attr("transform", `translate(0,${height})`)
+    .call(d3.axisBottom(x).ticks(months.length).tickFormat("") .tickSize(-height))
+    .selectAll("line").attr("stroke","#eee");
+
+  // axes
+  const xAxis = d3.axisBottom(x)
+                  .ticks(months.length)
+                  .tickFormat(d => "Tháng " + (d.getMonth()+1));
+
+  g.append("g")
+    .attr("transform", `translate(0,${height})`)
+    .call(xAxis)
+    .selectAll("text")
+      .attr("transform", "translate(0,6)")
+      .style("text-anchor","middle");
+
+  g.append("g")
+    .call(d3.axisLeft(y).tickFormat(d3.format(".0%")));
+
+  // color
+  const color = d3.scaleOrdinal(d3.schemeTableau10).domain(groups);
+
+  // line generator
+  const line = d3.line()
+    .defined(d => d.prob !== null && !isNaN(d.prob))
+    .x(d => x(d.date))
+    .y(d => y(d.prob));
+
+  // draw lines
+  const seriesG = g.selectAll(".series")
+    .data(series)
+    .enter().append("g")
+      .attr("class","series");
+
+  seriesG.append("path")
+    .attr("class","line")
+    .attr("d", d => line(d.values))
+    .attr("stroke", d => color(d.name))
+    .attr("fill", "none")
+    .attr("opacity", 0.95);
+
+  // draw points and tooltip events
+  const tooltip = d3.select("#tooltip");
+
+  seriesG.selectAll(".dot")
+    .data(d => d.values.map(v => ({ group: d.name, ...v })))
+    .enter().append("circle")
+      .attr("class","dot")
+      .attr("cx", d => x(d.date))
+      .attr("cy", d => y(d.prob))
+      .attr("r", 4)
+      .attr("fill", d => color(d.group))
+      .on("mouseenter", (event, d) => {
+         const pct = d3.format(".1%")(d.prob);
+         tooltip.style("display","block")
+                .html(`<strong>${d.group}</strong><br>${d3.timeFormat("%Y-%m")(d.date)}<br>Đơn có nhóm: ${d.count}<br>Tổng đơn tháng: ${d.total}<br><strong>${pct}</strong>`);
+      })
+      .on("mousemove", (event) => {
+         const [mx,my] = [event.pageX, event.pageY];
+         tooltip.style("left", (mx + 12) + "px")
+                .style("top", (my + 12) + "px");
+      })
+      .on("mouseleave", () => tooltip.style("display","none"));
+
+  // legend (right side)
+  const legendG = svg.append("g")
+    .attr("transform", `translate(${margin.left + width + 18}, ${margin.top})`);
+
+  const legend = legendG.selectAll(".legend")
+    .data(series)
+    .enter().append("g")
+      .attr("class","legend")
+      .attr("transform", (d,i) => `translate(0, ${i*20})`);
+
+  legend.append("rect")
+    .attr("width", 12).attr("height", 12)
+    .attr("fill", d => color(d.name));
+
+  legend.append("text")
+    .attr("x", 16).attr("y", 6).attr("dy","0.35em")
+    .text(d => d.name);
+
+  // title
+  svg.append("text")
+    .attr("x", (margin.left + width)/2)
+    .attr("y", 18)
+    .attr("text-anchor","middle")
+    .style("font-size","14px")
+    .style("fill","teal")
+    .style("font-weight",700)
+    .text("Xác suất bán hàng theo Nhóm hàng theo Tháng");
+
+}).catch(err => {
+  console.error("Lỗi load CSV:", err);
+  d3.select("#chart-wrap").append("div").style("color","red").text("Không thể load file CSV — kiểm tra đường dẫn và chạy local server.");
+});
+</script>
+</body>
+</html>

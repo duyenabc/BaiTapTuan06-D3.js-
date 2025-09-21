@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <title>Q10 – Xác suất bán hàng theo tháng</title>
+  <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+  <style>
+    body { font-family: Arial, Roboto, sans-serif; margin: 12px; background:#f5f6f7; }
+    h2 { text-align: center; background: #0f7f7f; color: white; padding: 10px; border-radius: 6px; }
+    .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; justify-content:center; }
+    .panel {
+      background: #fff; border: 1px solid #e6e6e6; border-radius: 6px;
+      padding: 8px 10px 12px;
+      width: 460px;
+      height: 300px;
+      overflow: hidden;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    }
+    .panel-title {
+      text-align:center; font-weight:700; color:#0f7f7f; margin: 4px 0 6px;
+    }
+    .axis text { font-size: 11px; }
+    .tooltip {
+      position: absolute;
+      pointer-events: none;
+      background: rgba(0,0,0,0.8);
+      color: #fff;
+      padding: 6px 8px;
+      border-radius: 4px;
+      font-size: 12px;
+      display: none;
+      z-index: 9999;
+    }
+    .line {
+      fill: none;
+      stroke-width: 2px;
+    }
+  </style>
+</head>
+<body>
+  <h2>Xác suất bán hàng của mặt hàng theo nhóm hàng theo từng tháng</h2>
+  <div id="wrap" class="grid"></div>
+  <div id="tip" class="tooltip"></div>
+
+<script>
+const tip = d3.select("#tip");
+function showTooltip(html, ev) {
+  tip.html(html).style("display", "block")
+     .style("left", (ev.pageX + 12) + "px")
+     .style("top", (ev.pageY + 12) + "px");
+}
+function hideTooltip() { tip.style("display", "none"); }
+
+// Load CSV
+d3.csv("data_ggsheet.csv").then(rows => {
+  if (!rows || rows.length === 0) {
+    d3.select("#wrap").append("div").text("CSV rỗng hoặc không đọc được dữ liệu.");
+    return;
+  }
+
+  // Parse date
+  const parseDate = d3.timeParse("%Y-%m-%d %H:%M:%S");
+  rows.forEach(d => { d.date = parseDate(d["Thời gian tạo đơn"]); });
+
+  // Gom theo đơn
+  const orders = d3.group(rows, d => d["Mã đơn hàng"]);
+
+  // Tính xác suất: item xuất hiện / tổng số đơn trong nhóm hàng theo từng tháng
+  const itemGroup = new Map();
+  const groupsSet = new Set();
+  const monthlyData = []; // {month, group, item, count, prob}
+
+  // helper: lấy key tháng YYYY-MM
+  function monthKey(date) {
+    return date.getFullYear() + "-" + String(date.getMonth()+1).padStart(2,"0");
+  }
+
+  // Gom item theo đơn
+  for (const [oid, items] of orders) {
+    const uniqItems = new Set(items.map(d => `[${d["Mã mặt hàng"]}] ${d["Tên mặt hàng"]}`));
+    for (const it of uniqItems) {
+      const row = items.find(r => `[${r["Mã mặt hàng"]}] ${r["Tên mặt hàng"]}` === it);
+      const grp = row ? `[${row["Mã nhóm hàng"]}] ${row["Tên nhóm hàng"]}` : "N/A";
+      itemGroup.set(it, grp);
+      groupsSet.add(grp);
+    }
+  }
+
+  // Gom đơn theo tháng + nhóm
+  const groupMonthOrders = new Map(); // (grp, month) -> Set(orderId)
+  for (const [oid, items] of orders) {
+    const m = monthKey(items[0].date);
+    const uniqItems = new Set(items.map(d => `[${d["Mã mặt hàng"]}] ${d["Tên mặt hàng"]}`));
+    for (const it of uniqItems) {
+      const grp = itemGroup.get(it);
+      const key = grp + "|" + m;
+      if (!groupMonthOrders.has(key)) groupMonthOrders.set(key, new Set());
+      groupMonthOrders.get(key).add(oid);
+    }
+  }
+
+  // Tính cho từng item trong từng nhóm + tháng
+  const itemMonthCount = new Map(); // (item, month) -> Set(orderId)
+  for (const [oid, items] of orders) {
+    const m = monthKey(items[0].date);
+    const uniqItems = new Set(items.map(d => `[${d["Mã mặt hàng"]}] ${d["Tên mặt hàng"]}`));
+    for (const it of uniqItems) {
+      const key = it + "|" + m;
+      if (!itemMonthCount.has(key)) itemMonthCount.set(key, new Set());
+      itemMonthCount.get(key).add(oid);
+    }
+  }
+
+  // build data
+  itemMonthCount.forEach((setOid, key) => {
+    const [it, m] = key.split("|");
+    const grp = itemGroup.get(it);
+    const grpKey = grp + "|" + m;
+    const totalGroupOrders = groupMonthOrders.get(grpKey)?.size || 1;
+    monthlyData.push({
+      month: m,
+      group: grp,
+      item: it,
+      count: setOid.size,
+      totalGroupOrders,
+      prob: setOid.size / totalGroupOrders
+    });
+  });
+
+  // Nhóm theo group
+  const byGroup = d3.group(monthlyData, d => d.group);
+
+  // Màu sắc
+  const allItems = Array.from(itemGroup.keys());
+  const color = d3.scaleOrdinal().domain(allItems).range(d3.schemeTableau10);
+
+  const wrap = d3.select("#wrap");
+  const panelW = 440, panelH = 280;
+  const margin = { top: 20, right: 20, bottom: 40, left: 45 };
+  const innerW = panelW - margin.left - margin.right;
+  const innerH = panelH - margin.top - margin.bottom;
+
+  byGroup.forEach((data, grp) => {
+    // lấy danh sách tháng
+    const months = Array.from(new Set(data.map(d => d.month))).sort();
+    const x = d3.scalePoint().domain(months).range([0, innerW]);
+    const y = d3.scaleLinear().domain([0, d3.max(data, d => d.prob) * 1.1]).nice().range([innerH, 0]);
+
+    const panel = wrap.append("div").attr("class","panel");
+    panel.append("div").attr("class","panel-title").text(grp);
+    const svg = panel.append("svg").attr("width", panelW).attr("height", panelH);
+    const g = svg.append("g").attr("transform", `translate(${margin.left},${margin.top})`);
+
+    // Axis
+    g.append("g")
+      .attr("transform", `translate(0,${innerH})`)
+      .call(d3.axisBottom(x).tickFormat(m => "T" + m.split("-")[1]));
+    g.append("g").call(d3.axisLeft(y).tickFormat(d3.format(".0%")));
+
+    // Line generator
+    const line = d3.line()
+      .x(d => x(d.month))
+      .y(d => y(d.prob));
+
+    // nhóm theo item
+    const byItem = d3.group(data, d => d.item);
+    byItem.forEach((arr, item) => {
+      arr.sort((a,b) => d3.ascending(a.month, b.month));
+      g.append("path")
+        .datum(arr)
+        .attr("class", "line")
+        .attr("stroke", color(item))
+        .attr("d", line);
+
+      // circles
+      g.selectAll("circle."+item.replace(/\W/g,""))
+        .data(arr)
+        .enter()
+        .append("circle")
+        .attr("cx", d => x(d.month))
+        .attr("cy", d => y(d.prob))
+        .attr("r", 3)
+        .attr("fill", color(item))
+        .on("mousemove", (ev,d) => {
+          showTooltip(`
+            <div><b>${d.item}</b></div>
+            <div>Tháng: ${d.month}</div>
+            <div>Xác suất: <b>${(d.prob*100).toFixed(1)}%</b></div>
+            <div>Đơn chứa: ${d.count}/${d.totalGroupOrders}</div>
+          `, ev);
+        })
+        .on("mouseleave", hideTooltip);
+    });
+  });
+});
+</script>
+</body>
+</html>

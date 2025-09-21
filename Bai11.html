@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <title>Phân phối lượt mua hàng</title>
+  <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+  <style>
+    body { font-family: Arial, Roboto, sans-serif; margin: 20px; background: #f8f9fa; }
+    h2 { text-align: center; color: teal; margin-bottom: 20px; }
+    .bar { fill: #00b3ad; }
+    .bar:hover { fill: orange; }
+    .axis text { font-size: 12px; }
+    .tooltip {
+      position: absolute;
+      pointer-events: none;
+      background: rgba(0,0,0,0.8);
+      color: white;
+      padding: 6px 10px;
+      border-radius: 4px;
+      font-size: 12px;
+      display: none;
+    }
+  </style>
+</head>
+<body>
+  <h2>Phân phối Lượt mua hàng</h2>
+  <svg id="chart" width="1000" height="500"></svg>
+  <div id="tooltip" class="tooltip"></div>
+
+<script>
+const svg = d3.select("#chart");
+const margin = {top: 40, right: 20, bottom: 50, left: 70};
+const width = +svg.attr("width") - margin.left - margin.right;
+const height = +svg.attr("height") - margin.top - margin.bottom;
+const g = svg.append("g").attr("transform", `translate(${margin.left},${margin.top})`);
+
+const tooltip = d3.select("#tooltip");
+
+// Load dữ liệu
+d3.csv("data_ggsheet.csv").then(rows => {
+  // Gom số lượt mua theo khách hàng
+  const byCustomer = d3.group(rows, d => d["Mã khách hàng"]);
+  const counts = Array.from(byCustomer, ([cust, orders]) => ({
+    customer: cust,
+    orders: new Set(orders.map(d => d["Mã đơn hàng"])).size
+  }));
+
+  // Gom phân phối: số khách có X lượt mua
+  const dist = d3.rollups(counts, v => v.length, d => d.orders)
+                 .map(([orders, n]) => ({orders, customers: n}))
+                 .sort((a,b) => d3.ascending(a.orders, b.orders));
+
+  // Thang đo
+  const x = d3.scaleBand()
+              .domain(dist.map(d => d.orders))
+              .range([0, width])
+              .padding(0.2);
+
+  const y = d3.scaleLinear()
+              .domain([0, d3.max(dist, d => d.customers)]).nice()
+              .range([height, 0]);
+
+  // Vẽ trục
+  g.append("g")
+    .attr("transform", `translate(0,${height})`)
+    .call(d3.axisBottom(x));
+
+  g.append("g").call(d3.axisLeft(y));
+
+  // Bars
+  g.selectAll(".bar")
+    .data(dist)
+    .enter()
+    .append("rect")
+    .attr("class", "bar")
+    .attr("x", d => x(d.orders))
+    .attr("y", d => y(d.customers))
+    .attr("width", x.bandwidth())
+    .attr("height", d => height - y(d.customers))
+    .on("mousemove", (ev, d) => {
+      tooltip.style("display", "block")
+        .html(`
+          <b>${d.customers}</b> khách hàng<br/>
+          có <b>${d.orders}</b> lượt mua
+        `)
+        .style("left", (ev.pageX + 15) + "px")
+        .style("top", (ev.pageY - 20) + "px");
+    })
+    .on("mouseleave", () => tooltip.style("display", "none"));
+
+  // Label trục
+  svg.append("text")
+    .attr("x", margin.left + width/2)
+    .attr("y", height + margin.top + 35)
+    .attr("text-anchor", "middle")
+    .attr("font-size", "13px")
+    .text("Số lượt mua");
+
+  svg.append("text")
+    .attr("transform", "rotate(-90)")
+    .attr("x", -(margin.top + height/2))
+    .attr("y", 20)
+    .attr("text-anchor", "middle")
+    .attr("font-size", "13px")
+    .text("Số khách hàng");
+});
+</script>
+</body>
+</html>
